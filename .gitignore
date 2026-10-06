@@ -35,3 +35,6 @@ uploads/
 .DS_Store
 Thumbs.db
 *.log
+.env
+backend/.env
+node_modules/
