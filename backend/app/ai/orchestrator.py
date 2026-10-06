@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.ai.base import BaseAIProvider
 from app.ai.gemini_provider import GeminiProvider
+from app.ai.simulation_provider import SimulationProvider
 from app.ai.schemas import (
     ProjectPlanResponse, GoalProjectPlanResponse, AIChallengeResponse, AIApproachResponse, AINodeAdviceResponse
 )
@@ -88,10 +89,12 @@ You MUST format your entire response as a valid JSON object strictly matching th
 class AIOrchestrator:
     def __init__(self):
         self.gemini_provider = GeminiProvider()
+        self.simulation_provider = SimulationProvider()
 
     def get_provider(self, preferred_provider: Optional[str] = None) -> BaseAIProvider:
-        if not settings.GEMINI_API_KEY:
-            raise RuntimeError("Something went wrong while generating your plan. Please try again in a few seconds.")
+        provider_name = (preferred_provider or settings.AI_PROVIDER or "").lower()
+        if provider_name == "simulation" or not settings.GEMINI_API_KEY:
+            return self.simulation_provider
         return self.gemini_provider
 
     async def _execute_with_validation_and_retry(
@@ -109,8 +112,18 @@ class AIOrchestrator:
                 validated_obj = schema_class.model_validate(raw_data)
                 return validated_obj.model_dump()
             except Exception as e:
-                logger.error(f"Gemini generation attempt {attempt + 1} failed: {e}", exc_info=True)
+                logger.error(f"AI generation attempt {attempt + 1} failed: {e}", exc_info=True)
                 last_error = e
+
+        # Fallback to simulation provider if primary provider failed
+        if provider != self.simulation_provider:
+            try:
+                logger.warning(f"Falling back to simulation provider after error: {last_error}")
+                raw_data = await self.simulation_provider.generate_json(system_prompt, user_prompt, schema_class)
+                validated_obj = schema_class.model_validate(raw_data)
+                return validated_obj.model_dump()
+            except Exception as fallback_err:
+                logger.error(f"Simulation fallback failed: {fallback_err}")
 
         raise RuntimeError(str(last_error) if last_error else "Something went wrong while generating your plan. Please try again in a few seconds.")
 
