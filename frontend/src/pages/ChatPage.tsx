@@ -5,7 +5,7 @@ import {
   Copy, Check, Menu, X, AlertCircle, RefreshCw, Image as ImageIcon,
   BookOpen, Calendar, Rocket, ShieldAlert, CheckCircle2, ChevronRight,
   ChevronDown, Layers, ArrowRight, Play, Award, Code, CheckSquare,
-  Clock, Users, Cpu, Target, HelpCircle, Lightbulb, Compass, Share2, GitBranch
+  Clock, Users, Cpu, Target, HelpCircle, Lightbulb, Compass, Share2, GitBranch, Search
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme, ThemePreference } from "../context/ThemeContext";
@@ -1230,14 +1230,14 @@ const MessageBubble: React.FC<{
 
   if (isUser) {
     return (
-      <div className="flex flex-col items-end mb-6">
+      <div className="flex flex-col items-end mb-4 sm:mb-6 w-full">
         {msg.imagePreview && (
           <div className="mb-2 max-w-[280px] rounded-xl overflow-hidden border border-slate-300 dark:border-slate-700 shadow-md">
             <img src={msg.imagePreview} alt="User attachment" className="w-full h-auto object-cover max-h-60" />
           </div>
         )}
         <div
-          className={`max-w-[75%] px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words ${
+          className={`max-w-[88%] sm:max-w-[75%] px-3.5 sm:px-4 py-2.5 sm:py-3 rounded-2xl rounded-br-sm text-xs sm:text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words ${
             isLight
               ? "bg-[#E6F9F4] text-slate-900 border border-[#20D9B0]/40"
               : "bg-[#27E6B5]/10 text-[#F1F5F9] border border-[#27E6B5]/20"
@@ -1250,9 +1250,9 @@ const MessageBubble: React.FC<{
   }
 
   return (
-    <div className="mb-8 group">
+    <div className="mb-6 sm:mb-8 group w-full min-w-0">
       {/* AI Header */}
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-2.5 sm:mb-3">
         <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-[#20D9B0] to-[#8B5CF6] flex items-center justify-center flex-shrink-0 shadow-sm">
           <Sparkles className="w-3.5 h-3.5 text-white" />
         </div>
@@ -1260,11 +1260,12 @@ const MessageBubble: React.FC<{
       </div>
 
       {/* Content */}
-      <div className="pl-8">
+      <div className="pl-0 sm:pl-8 min-w-0 break-words">
         {msg.content === "THINKING" ? (
-          <div className={`flex items-center gap-2.5 text-sm ${isLight ? "text-slate-500" : "text-[#64748B]"}`}>
-            <div className="w-4 h-4 rounded-full border-2 border-[#20D9B0]/30 border-t-[#20D9B0] animate-spin flex-shrink-0" />
-            <span className={`text-xs ${isLight ? "text-slate-600 font-medium" : "text-[#94A3B8]"}`}>Thinking...</span>
+          <div className="flex items-center gap-1.5 py-1 text-xs">
+            <span className="w-2 h-2 rounded-full bg-[#20D9B0] animate-pulse" />
+            <span className="w-2 h-2 rounded-full bg-[#20D9B0] animate-pulse [animation-delay:150ms]" />
+            <span className="w-2 h-2 rounded-full bg-[#20D9B0] animate-pulse [animation-delay:300ms]" />
           </div>
         ) : msg.is_error ? (
           <div className={`p-4 rounded-xl border text-xs max-w-xl ${
@@ -1621,15 +1622,19 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.innerWidth >= 768;
+    }
+    return true;
+  });
+  const [searchQuery, setSearchQuery] = useState("");
   const [lastUserPrompt, setLastUserPrompt] = useState<string>("");
   const [flowModalData, setFlowModalData] = useState<StructuredWorkspaceData | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const initialProcessedRef = useRef(false);
-
-
 
   const loadConversations = async () => {
     try {
@@ -1642,6 +1647,9 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
 
   const loadConversation = async (convId: string) => {
     setActiveConvId(convId);
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
     try {
       const r = await fetch(`${API}/chat/conversations/${convId}/messages`, {
         headers: { Authorization: `Bearer ${getToken()}` },
@@ -1656,6 +1664,9 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
   const newConversation = () => {
     setActiveConvId(null);
     setMessages([]);
+    if (window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
   };
 
   const deleteConversation = async (convId: string, e: React.MouseEvent) => {
@@ -1745,28 +1756,36 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
 
         const reader = r.body!.getReader();
         const decoder = new TextDecoder();
+        let buffer = "";
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const lines = decoder.decode(value).split("\n");
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data: ")) continue;
             try {
-              const payload = JSON.parse(line.slice(6));
+              const payload = JSON.parse(trimmed.slice(6));
               if (payload.type === "meta") {
                 convId = payload.conversation_id;
-                assistantId = payload.message_id;
-                if (!activeConvId) {
+                if (payload.message_id) {
+                  assistantId = payload.message_id;
+                }
+                if (!activeConvId && convId) {
                   setActiveConvId(convId);
                 }
               } else if (payload.type === "chunk") {
                 fullText += payload.text;
+                const curText = fullText;
                 setMessages(prev =>
                   prev.map(m =>
                     m.id === thinkingMsg.id || m.id === assistantId
-                      ? { ...m, id: assistantId, content: fullText, is_error: false }
+                      ? { ...m, id: assistantId, content: curText, is_error: false }
                       : m
                   )
                 );
@@ -1852,7 +1871,9 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
 
   // Scroll to bottom on messages change
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
+    }
   }, [messages, isStreaming]);
 
   return (
@@ -1872,19 +1893,30 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
         isLight={isLight}
       />
 
-      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
+      {/* Mobile Drawer Backdrop Overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-opacity"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ── Sidebar / History Drawer ────────────────────────────────────────── */}
       <div
-        className={`flex-shrink-0 flex flex-col transition-all duration-300 border-r relative z-20 ${
-          sidebarOpen ? "w-64" : "w-0 overflow-hidden"
+        className={`fixed inset-y-0 left-0 z-50 md:relative md:z-20 flex-shrink-0 flex flex-col transition-all duration-300 border-r ${
+          sidebarOpen
+            ? "translate-x-0 w-72 max-w-[85vw] md:w-64 md:translate-x-0 shadow-2xl md:shadow-none"
+            : "-translate-x-full md:translate-x-0 w-72 max-w-[85vw] md:w-0 md:overflow-hidden pointer-events-none md:pointer-events-auto"
         } ${
           isLight
-            ? "bg-white/80 border-slate-200/90 shadow-sm backdrop-blur-xl"
-            : "bg-[#161338]/85 border-white/10 backdrop-blur-xl"
+            ? "bg-white border-slate-200/90 shadow-sm md:bg-white/80 md:backdrop-blur-xl"
+            : "bg-[#161338] border-white/10 md:bg-[#161338]/85 md:backdrop-blur-xl"
         }`}
       >
         {sidebarOpen && (
           <>
-            {/* Logo + New */}
+            {/* Logo + New + Mobile Close */}
             <div
               className={`p-4 border-b flex items-center justify-between flex-shrink-0 ${
                 isLight ? "border-slate-200/80" : "border-white/10"
@@ -1898,17 +1930,30 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
                 </div>
                 <span className={`font-bold text-sm ${isLight ? "text-slate-900" : "text-white"}`}>ThinkFlow</span>
               </a>
-              <button
-                onClick={newConversation}
-                className={`p-1.5 rounded-lg transition-all cursor-pointer ${
-                  isLight
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-                    : "text-[#64748B] hover:text-[#27E6B5] hover:bg-white/5"
-                }`}
-                title="New conversation"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={newConversation}
+                  className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+                    isLight
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                      : "text-[#64748B] hover:text-[#27E6B5] hover:bg-white/5"
+                  }`}
+                  title="New conversation"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className={`md:hidden p-1.5 rounded-lg transition-all cursor-pointer ${
+                    isLight
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+                      : "text-[#64748B] hover:text-white hover:bg-white/5"
+                  }`}
+                  title="Close drawer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Nav links */}
@@ -1926,6 +1971,24 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
               </a>
             </div>
 
+            {/* Search History */}
+            <div className="px-3 pb-1 flex-shrink-0">
+              <div className="relative">
+                <Search className={`w-3.5 h-3.5 absolute left-2.5 top-2.5 ${isLight ? "text-slate-400" : "text-slate-500"}`} />
+                <input
+                  type="text"
+                  placeholder="Search history..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className={`w-full pl-8 pr-2.5 py-1.5 rounded-xl text-xs outline-none transition-colors ${
+                    isLight
+                      ? "bg-slate-100 text-slate-900 placeholder-slate-400 focus:bg-slate-200/70"
+                      : "bg-white/5 text-white placeholder-slate-500 focus:bg-white/10"
+                  }`}
+                />
+              </div>
+            </div>
+
             {/* Conversations list */}
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
               <p className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${isLight ? "text-slate-400" : "text-[#334155]"}`}>
@@ -1936,35 +1999,37 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
                   No conversations yet
                 </p>
               )}
-              {conversations.map(conv => (
-                <div
-                  key={conv.id}
-                  onClick={() => loadConversation(conv.id)}
-                  role="button"
-                  tabIndex={0}
-                  className={`w-full text-left flex items-start justify-between gap-2 px-3 py-2.5 rounded-xl text-xs transition-all cursor-pointer group ${
-                    activeConvId === conv.id
-                      ? isLight
-                        ? "bg-teal-50 text-slate-900 border border-teal-200 font-medium"
-                        : "bg-[#27E6B5]/10 text-[#F1F5F9] border border-[#27E6B5]/20"
-                      : isLight
-                      ? "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
-                      : "text-[#64748B] hover:text-[#94A3B8] hover:bg-white/[0.03]"
-                  }`}
-                >
-                  <div className="flex items-start gap-2 min-w-0">
-                    <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${activeConvId === conv.id ? "text-[#20D9B0]" : "text-slate-400"}`} />
-                    <span className="line-clamp-2 leading-snug">{conv.title}</span>
-                  </div>
-                  <button
-                    onClick={e => deleteConversation(conv.id, e)}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-rose-500 transition-all cursor-pointer flex-shrink-0"
-                    title="Delete conversation"
+              {conversations
+                .filter(conv => !searchQuery.trim() || conv.title.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map(conv => (
+                  <div
+                    key={conv.id}
+                    onClick={() => loadConversation(conv.id)}
+                    role="button"
+                    tabIndex={0}
+                    className={`w-full text-left flex items-start justify-between gap-2 px-3 py-2.5 rounded-xl text-xs transition-all cursor-pointer group ${
+                      activeConvId === conv.id
+                        ? isLight
+                          ? "bg-teal-50 text-slate-900 border border-teal-200 font-medium"
+                          : "bg-[#27E6B5]/10 text-[#F1F5F9] border border-[#27E6B5]/20"
+                        : isLight
+                        ? "text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+                        : "text-[#64748B] hover:text-[#94A3B8] hover:bg-white/[0.03]"
+                    }`}
                   >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-start gap-2 min-w-0">
+                      <MessageSquare className={`w-3.5 h-3.5 mt-0.5 flex-shrink-0 ${activeConvId === conv.id ? "text-[#20D9B0]" : "text-slate-400"}`} />
+                      <span className="line-clamp-2 leading-snug">{conv.title}</span>
+                    </div>
+                    <button
+                      onClick={e => deleteConversation(conv.id, e)}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded text-slate-400 hover:text-rose-500 transition-all cursor-pointer flex-shrink-0"
+                      title="Delete conversation"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
             </div>
 
             {/* User footer */}
@@ -1999,10 +2064,10 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
       </div>
 
       {/* ── Main area ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col min-w-0 relative z-10">
+      <div className="flex-1 flex flex-col min-w-0 w-full h-full relative z-10 overflow-hidden">
         {/* Top bar */}
         <div
-          className={`h-12 flex items-center justify-between px-4 flex-shrink-0 border-b ${
+          className={`h-12 flex items-center justify-between px-3 sm:px-4 flex-shrink-0 border-b ${
             isLight
               ? "border-slate-200/80 bg-white/70 backdrop-blur-xl"
               : "border-white/10 bg-[#12102a]/60 backdrop-blur-xl"
@@ -2010,48 +2075,48 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
         >
           <button
             onClick={() => setSidebarOpen(o => !o)}
-            className={`p-1.5 rounded-lg transition-all cursor-pointer ${
+            className={`p-1.5 sm:p-2 rounded-lg transition-all cursor-pointer ${
               isLight ? "text-slate-600 hover:text-slate-900 hover:bg-slate-100" : "text-[#a9a3d6] hover:text-white hover:bg-white/5"
             }`}
-            title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
           >
-            {sidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+            <Menu className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2">
             {activeConvId && (
               <button
                 onClick={newConversation}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${
                   isLight
                     ? "text-slate-700 hover:bg-slate-100 border border-slate-200 font-medium"
                     : "text-[#a9a3d6] hover:text-white hover:bg-white/5 border border-white/10"
                 }`}
               >
-                <Plus className="w-3.5 h-3.5" /> New Conversation
+                <Plus className="w-3.5 h-3.5" /> <span className="hidden sm:inline">New Conversation</span><span className="sm:hidden">New</span>
               </button>
             )}
           </div>
         </div>
 
         {/* Messages Scroll Area */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden w-full">
           {messages.length === 0 ? (
             /* Clean Center Hero */
-            <div className="h-full flex flex-col items-center justify-center px-6 pb-28">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#20D9B0] to-[#8B5CF6] p-0.5 mb-6 shadow-md">
+            <div className="h-full flex flex-col items-center justify-center px-4 sm:px-6 pb-20 sm:pb-28">
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#20D9B0] to-[#8B5CF6] p-0.5 mb-4 sm:mb-6 shadow-md">
                 <div className={`w-full h-full rounded-[14px] flex items-center justify-center ${isLight ? "bg-white" : "bg-[#12102a]"}`}>
                   <Sparkles className="w-6 h-6 text-[#20D9B0]" />
                 </div>
               </div>
-              <h1 className={`text-2xl sm:text-3xl font-bold mb-2 text-center tracking-tight ${isLight ? "text-slate-900" : "text-white"}`}>
+              <h1 className={`text-xl sm:text-3xl font-bold mb-2 text-center tracking-tight ${isLight ? "text-slate-900" : "text-white"}`}>
                 Where will your idea take you?
               </h1>
-              <p className={`text-sm text-center max-w-md ${isLight ? "text-slate-500" : "text-[#64748B]"}`}>
+              <p className={`text-xs sm:text-sm text-center max-w-md ${isLight ? "text-slate-500" : "text-[#64748B]"}`}>
                 Describe a goal, problem, or idea — ThinkFlow will understand your intent and build the path forward.
               </p>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto px-4 pt-8 pb-6">
+            <div className="max-w-3xl mx-auto px-3 sm:px-4 pt-4 sm:pt-8 pb-4 sm:pb-6 w-full min-w-0">
               {messages.map(msg => (
                 <MessageBubble
                   key={msg.id}
@@ -2069,13 +2134,13 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
         </div>
 
         {/* Composer Area */}
-        <div className="flex-shrink-0 px-4 pb-4 pt-2 max-w-3xl mx-auto w-full">
+        <div className="flex-shrink-0 px-3 sm:px-4 pb-3 sm:pb-4 pt-2 max-w-3xl mx-auto w-full min-w-0">
           <Composer
             onSend={sendMessage}
             isStreaming={isStreaming}
             isLight={isLight}
           />
-          <p className={`text-center text-[10px] mt-2 ${isLight ? "text-slate-400 font-medium" : "text-[#334155]"}`}>
+          <p className={`text-center text-[10px] mt-1.5 sm:mt-2 ${isLight ? "text-slate-400 font-medium" : "text-[#334155]"}`}>
             ThinkFlow AI — Turn ideas into action.
           </p>
         </div>

@@ -168,11 +168,21 @@ async def _handle_send_stream(
     if not prompt_text:
         raise HTTPException(status_code=400, detail="Message content cannot be empty.")
 
-    # 1. Get or create conversation
+    # 1. Get or create conversation and load previous context
     if body.conversation_id:
         conv = await db.get(Conversation, body.conversation_id)
         if not conv or conv.user_id != current_user.id:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        history_result = await db.execute(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.created_at)
+        )
+        history = history_result.scalars().all()
+        messages_payload = [
+            {"role": m.role, "content": m.content}
+            for m in history
+        ]
     else:
         conv = Conversation(
             user_id=current_user.id,
@@ -180,12 +190,12 @@ async def _handle_send_stream(
             model="gemini",
         )
         db.add(conv)
-        await db.flush()
+        messages_payload = []
 
     conv.model = "gemini"
     conv.updated_at = datetime.datetime.utcnow()
 
-    # 2. Save user message
+    # 2. Save user message and create placeholder assistant message in single commit
     user_msg = Message(
         conversation_id=conv.id,
         role="user",
@@ -193,24 +203,7 @@ async def _handle_send_stream(
         model_used="gemini",
     )
     db.add(user_msg)
-    await db.flush()
 
-    # 3. Load full conversation history (for Gemini context)
-    history_result = await db.execute(
-        select(Message)
-        .where(Message.conversation_id == conv.id)
-        .order_by(Message.created_at)
-    )
-    history = history_result.scalars().all()
-    messages_payload = [
-        {"role": m.role, "content": m.content}
-        for m in history
-    ]
-    if messages_payload and body.image_base64:
-        messages_payload[-1]["image_base64"] = body.image_base64
-        messages_payload[-1]["image_mime_type"] = body.image_mime_type or "image/jpeg"
-
-    # 4. Create placeholder assistant message
     assistant_msg = Message(
         conversation_id=conv.id,
         role="assistant",
@@ -223,8 +216,13 @@ async def _handle_send_stream(
     conv_id = conv.id
     msg_id = assistant_msg.id
 
+    messages_payload.append({"role": "user", "content": prompt_text})
+    if body.image_base64:
+        messages_payload[-1]["image_base64"] = body.image_base64
+        messages_payload[-1]["image_mime_type"] = body.image_mime_type or "image/jpeg"
+
     async def event_stream():
-        # Emit initial metadata
+        # Emit initial metadata immediately
         yield f"data: {json.dumps({'type': 'meta', 'conversation_id': conv_id, 'message_id': msg_id, 'provider': 'gemini'})}\n\n"
 
         full_text = ""
@@ -243,7 +241,7 @@ async def _handle_send_stream(
                 })
                 yield f"data: {payload}\n\n"
 
-            # Persist assistant response
+            # Persist assistant response asynchronously
             async with AsyncSessionLocal() as session:
                 msg = await session.get(Message, msg_id)
                 if msg:
@@ -252,13 +250,13 @@ async def _handle_send_stream(
                 db_conv = await session.get(Conversation, conv_id)
                 if db_conv:
                     db_conv.model = "gemini"
+                    db_conv.updated_at = datetime.datetime.utcnow()
                 await session.commit()
 
             yield f"data: {json.dumps({'type': 'done', 'provider': 'gemini'})}\n\n"
 
         except (AIProviderError, NoProviderConfiguredError) as e:
             raw = e.message if hasattr(e, "message") else str(e)
-            # Never expose raw provider details to the user
             safe_msg = "Our AI service is experiencing high demand right now. Please try again." if any(
                 kw in raw.lower() for kw in ("503", "unavailable", "overload", "rate limit", "quota", "api key", "gemini")
             ) else "Gemini is temporarily unavailable. Please retry."

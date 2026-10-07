@@ -178,16 +178,21 @@ DO NOT output a <THINKFLOW_RESPONSE> block for simple questions or general chat 
 class GeminiChatProvider(BaseAIChatProvider):
     name: str = "gemini"
 
+    def __init__(self):
+        self._client: Optional[genai.Client] = None
+
     def is_configured(self) -> bool:
         return bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip())
 
     def get_model(self, model: Optional[str] = None) -> str:
-        return model or settings.GEMINI_MODEL or "gemini-3.5-flash-lite"
+        return model or settings.GEMINI_MODEL or "gemini-3-flash-preview"
 
     def _get_client(self) -> genai.Client:
         if not self.is_configured():
             raise AIProviderError(self.name, "No AI provider is configured. Add an API key to the backend environment.")
-        return genai.Client(api_key=settings.GEMINI_API_KEY)
+        if self._client is None:
+            self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        return self._client
 
     def _format_contents(self, messages: List[Dict[str, Any]]) -> List[types.Content]:
         """Convert message history into Gemini Content objects with user/model turns and multimodal support."""
@@ -261,25 +266,21 @@ class GeminiChatProvider(BaseAIChatProvider):
         if not contents:
             raise AIProviderError(self.name, "No messages provided for generation.")
 
-        candidate_models = [self.get_model(model), "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"]
-        # Remove duplicates preserving order
+        candidate_models = [self.get_model(model), "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-flash"]
         candidate_models = list(dict.fromkeys(candidate_models))
+
+        config = types.GenerateContentConfig(
+            system_instruction=THINKFLOW_SYSTEM_PROMPT,
+            temperature=0.7,
+        )
 
         last_err = None
         for cand_model in candidate_models:
             try:
-                loop = asyncio.get_running_loop()
-                config = types.GenerateContentConfig(
-                    system_instruction=THINKFLOW_SYSTEM_PROMPT,
-                    temperature=0.7,
-                )
-                response = await loop.run_in_executor(
-                    None,
-                    lambda m=cand_model: client.models.generate_content(
-                        model=m,
-                        contents=contents,
-                        config=config,
-                    )
+                response = await client.aio.models.generate_content(
+                    model=cand_model,
+                    contents=contents,
+                    config=config,
                 )
                 if response and response.text:
                     return response.text
@@ -288,62 +289,46 @@ class GeminiChatProvider(BaseAIChatProvider):
                 logger.warning(f"Model {cand_model} failed: {e}. Trying fallback if available.")
 
         logger.error(f"Gemini generate error on all candidates: {last_err}")
-        user_msg = self._map_gemini_error(last_err)
+        user_msg = self._map_gemini_error(last_err or Exception("Generation failed"))
         raise AIProviderError(self.name, user_msg, original_error=last_err)
 
     async def stream(self, messages: List[Dict[str, str]], model: Optional[str] = None) -> AsyncIterator[str]:
-        """Real chunk-by-chunk streaming from Google Gemini API with zero artificial delay."""
+        """Real chunk-by-chunk streaming directly via Google Gemini Async Client with minimum latency."""
         client = self._get_client()
         contents = self._format_contents(messages)
 
         if not contents:
             raise AIProviderError(self.name, "No messages provided for generation.")
 
-        candidate_models = [self.get_model(model), "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"]
+        candidate_models = [self.get_model(model), "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-flash"]
         candidate_models = list(dict.fromkeys(candidate_models))
 
-        queue: asyncio.Queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
+        config = types.GenerateContentConfig(
+            system_instruction=THINKFLOW_SYSTEM_PROMPT,
+            temperature=0.7,
+        )
 
-        def _sync_worker():
-            for cand_model in candidate_models:
-                try:
-                    config = types.GenerateContentConfig(
-                        system_instruction=THINKFLOW_SYSTEM_PROMPT,
-                        temperature=0.7,
-                    )
-                    response_stream = client.models.generate_content_stream(
-                        model=cand_model,
-                        contents=contents,
-                        config=config,
-                    )
-                    has_chunks = False
-                    for chunk in response_stream:
-                        if chunk and chunk.text:
-                            has_chunks = True
-                            loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk.text))
-                    if has_chunks:
-                        loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
-                        return
-                except Exception as exc:
-                    logger.warning(f"Streaming error on {cand_model}: {exc}")
-                    continue
-            loop.call_soon_threadsafe(queue.put_nowait, ("error", Exception("All Gemini models encountered rate limits or connection errors.")))
+        last_err = None
+        for cand_model in candidate_models:
+            try:
+                response_stream = await client.aio.models.generate_content_stream(
+                    model=cand_model,
+                    contents=contents,
+                    config=config,
+                )
+                has_chunks = False
+                async for chunk in response_stream:
+                    if chunk and chunk.text:
+                        has_chunks = True
+                        yield chunk.text
+                if has_chunks:
+                    return
+            except Exception as exc:
+                last_err = exc
+                logger.warning(f"Streaming error on {cand_model}: {exc}")
+                continue
 
-        worker_thread = threading.Thread(target=_sync_worker, daemon=True)
-        worker_thread.start()
-
-        try:
-            while True:
-                item_type, val = await queue.get()
-                if item_type == "chunk":
-                    yield val
-                elif item_type == "done":
-                    break
-                elif item_type == "error":
-                    logger.error(f"Gemini streaming error: {val}")
-                    user_msg = self._map_gemini_error(val)
-                    raise AIProviderError(self.name, user_msg, original_error=val)
-        finally:
-            pass
+        logger.error(f"Gemini streaming error on all candidates: {last_err}")
+        user_msg = self._map_gemini_error(last_err or Exception("Streaming failed"))
+        raise AIProviderError(self.name, user_msg, original_error=last_err)
 
