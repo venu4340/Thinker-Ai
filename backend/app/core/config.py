@@ -10,7 +10,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
 
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./thinkflow.db")
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "sqlite+aiosqlite:////tmp/thinkflow.db" if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME")) else "sqlite+aiosqlite:///./thinkflow.db"
+    )
 
     # ── AI Provider Configuration (Gemini Only) ───────────────────────────────────
     AI_DEFAULT_PROVIDER: str = os.getenv("AI_DEFAULT_PROVIDER", "gemini")
