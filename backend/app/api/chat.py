@@ -8,7 +8,7 @@ from sqlalchemy import select, desc
 from pydantic import BaseModel, Field
 
 from app.database.session import get_db, AsyncSessionLocal
-from app.models.models import Conversation, Message, User
+from app.models.models import Conversation, Message, User, generate_uuid
 from app.api.auth import get_current_user
 from app.ai.chat_service import stream_chat_response
 from app.ai.providers.provider_manager import provider_manager, AIProviderError, NoProviderConfiguredError
@@ -185,11 +185,13 @@ async def _handle_send_stream(
         ]
     else:
         conv = Conversation(
+            id=generate_uuid(),
             user_id=current_user.id,
             title=_title_from_message(prompt_text),
             model="gemini",
         )
         db.add(conv)
+        await db.flush()
         messages_payload = []
 
     conv.model = "gemini"
@@ -197,6 +199,7 @@ async def _handle_send_stream(
 
     # 2. Save user message and create placeholder assistant message in single commit
     user_msg = Message(
+        id=generate_uuid(),
         conversation_id=conv.id,
         role="user",
         content=prompt_text,
@@ -205,6 +208,7 @@ async def _handle_send_stream(
     db.add(user_msg)
 
     assistant_msg = Message(
+        id=generate_uuid(),
         conversation_id=conv.id,
         role="assistant",
         content="",
