@@ -83,7 +83,7 @@ interface SelectedImage {
 const API = "/api/v1";
 
 function getToken() {
-  return localStorage.getItem("thinkflow_token");
+  return api.getToken();
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────
@@ -1638,8 +1638,12 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
 
   const loadConversations = async () => {
     try {
+      const token = getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const r = await fetch(`${API}/chat/conversations`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
+        credentials: "include",
+        headers,
       });
       if (r.ok) setConversations(await r.json());
     } catch {}
@@ -1651,8 +1655,12 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
       setSidebarOpen(false);
     }
     try {
+      const token = getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const r = await fetch(`${API}/chat/conversations/${convId}/messages`, {
-        headers: { Authorization: `Bearer ${getToken()}` },
+        credentials: "include",
+        headers,
       });
       if (r.ok) {
         const msgs: Message[] = await r.json();
@@ -1671,9 +1679,13 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
 
   const deleteConversation = async (convId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     await fetch(`${API}/chat/conversations/${convId}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${getToken()}` },
+      credentials: "include",
+      headers,
     });
     if (activeConvId === convId) newConversation();
     setConversations(prev => prev.filter(c => c.id !== convId));
@@ -1736,12 +1748,18 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
       let convId = activeConvId;
 
       try {
+        const token = getToken();
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+
         const r = await fetch(`${API}/chat/send`, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${getToken()}`,
-          },
+          credentials: "include",
+          headers,
           body: JSON.stringify({
             conversation_id: convId,
             content,
@@ -1752,7 +1770,10 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
           signal: ctrl.signal,
         });
 
-        if (!r.ok) throw new Error("Backend connection failed.");
+        if (!r.ok) {
+          const errData = await r.json().catch(() => null);
+          throw new Error(errData?.detail || `Backend connection failed with status ${r.status}`);
+        }
 
         const reader = r.body!.getReader();
         const decoder = new TextDecoder();
@@ -1811,13 +1832,14 @@ export const ChatPage: React.FC<{ initialGoal?: string; initialIdea?: string }> 
         }
       } catch (err: any) {
         if (err.name !== "AbortError") {
+          const msg = err.message && !err.message.includes("Failed to fetch") ? err.message : "AI couldn't respond. Please try again.";
           setMessages(prev =>
             prev.map(m =>
               m.id === thinkingMsg.id || m.id === assistantId
                 ? {
                     ...m,
                     id: assistantId,
-                    content: "AI couldn't respond. Please try again.",
+                    content: msg,
                     is_error: true,
                   }
                 : m

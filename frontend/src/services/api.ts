@@ -6,16 +6,32 @@ import {
 const API_BASE = '/api/v1';
 
 class ApiClient {
-  private getToken(): string | null {
-    return localStorage.getItem('thinkflow_token');
+  public getToken(): string | null {
+    let token = localStorage.getItem('thinkflow_token');
+    if (!token && typeof document !== 'undefined') {
+      const match = document.cookie.match(new RegExp('(^| )thinkflow_token=([^;]+)'));
+      if (match && match[2]) {
+        token = decodeURIComponent(match[2]);
+        try {
+          localStorage.setItem('thinkflow_token', token);
+        } catch {}
+      }
+    }
+    return token;
   }
 
   private setToken(token: string) {
     localStorage.setItem('thinkflow_token', token);
+    if (typeof document !== 'undefined') {
+      document.cookie = `thinkflow_token=${encodeURIComponent(token)}; Path=/; Max-Age=604800; SameSite=Lax; Secure`;
+    }
   }
 
   public clearToken() {
     localStorage.removeItem('thinkflow_token');
+    if (typeof document !== 'undefined') {
+      document.cookie = 'thinkflow_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT; SameSite=Lax; Secure';
+    }
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -33,6 +49,7 @@ class ApiClient {
     }
 
     const response = await fetch(`${API_BASE}${endpoint}`, {
+      credentials: 'include',
       ...options,
       headers,
     });

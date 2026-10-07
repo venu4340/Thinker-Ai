@@ -76,6 +76,8 @@ DEFAULT_TEMPLATES = [
     }
 ]
 
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
+
 async def init_db():
     async with engine.begin() as conn:
         # Create all tables
@@ -96,12 +98,13 @@ async def init_db():
 
     async with AsyncSessionLocal() as db:
         # Check if demo user exists
-        q_user = select(User).where(User.email == "demo@thinkflow.ai")
+        q_user = select(User).where((User.email == "demo@thinkflow.ai") | (User.id == DEMO_USER_ID))
         res_user = await db.execute(q_user)
         demo_user = res_user.scalar_one_or_none()
 
         if not demo_user:
             demo_user = User(
+                id=DEMO_USER_ID,
                 email="demo@thinkflow.ai",
                 hashed_password=get_password_hash("demo12345"),
                 full_name="Alex Mercer (Demo Lead)",

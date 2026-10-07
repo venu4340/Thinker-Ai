@@ -266,7 +266,7 @@ class GeminiChatProvider(BaseAIChatProvider):
         if not contents:
             raise AIProviderError(self.name, "No messages provided for generation.")
 
-        candidate_models = [self.get_model(model), "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-flash"]
+        candidate_models = [self.get_model(model), "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3-flash-preview"]
         candidate_models = list(dict.fromkeys(candidate_models))
 
         config = types.GenerateContentConfig(
@@ -300,7 +300,7 @@ class GeminiChatProvider(BaseAIChatProvider):
         if not contents:
             raise AIProviderError(self.name, "No messages provided for generation.")
 
-        candidate_models = [self.get_model(model), "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-1.5-flash"]
+        candidate_models = [self.get_model(model), "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3-flash-preview"]
         candidate_models = list(dict.fromkeys(candidate_models))
 
         config = types.GenerateContentConfig(

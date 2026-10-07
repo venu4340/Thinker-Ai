@@ -22,7 +22,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const checkAuth = async () => {
-      const token = localStorage.getItem('thinkflow_token');
+      const token = api.getToken();
       if (token) {
         try {
           const userData = await api.getCurrentUser() as User;
@@ -92,6 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     api.clearToken();
     setUser(null);
   };

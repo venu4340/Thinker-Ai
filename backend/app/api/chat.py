@@ -125,8 +125,10 @@ async def get_messages(
     current_user: User = Depends(get_current_user),
 ):
     conv = await db.get(Conversation, conversation_id)
-    if not conv or conv.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    if not conv:
+        return []
+    if conv.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)
@@ -152,11 +154,12 @@ async def delete_conversation(
     current_user: User = Depends(get_current_user),
 ):
     conv = await db.get(Conversation, conversation_id)
-    if not conv or conv.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    await db.delete(conv)
-    await db.commit()
-    return {"ok": True}
+    if conv:
+        if conv.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        await db.delete(conv)
+        await db.commit()
+    return {"status": "deleted"}
 
 
 async def _handle_send_stream(
@@ -171,18 +174,30 @@ async def _handle_send_stream(
     # 1. Get or create conversation and load previous context
     if body.conversation_id:
         conv = await db.get(Conversation, body.conversation_id)
-        if not conv or conv.user_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        history_result = await db.execute(
-            select(Message)
-            .where(Message.conversation_id == conv.id)
-            .order_by(Message.created_at)
-        )
-        history = history_result.scalars().all()
-        messages_payload = [
-            {"role": m.role, "content": m.content}
-            for m in history
-        ]
+        if not conv:
+            # Ephemeral serverless container recovery: create conversation record with requested ID
+            conv = Conversation(
+                id=body.conversation_id,
+                user_id=current_user.id,
+                title=_title_from_message(prompt_text),
+                model="gemini",
+            )
+            db.add(conv)
+            await db.flush()
+            messages_payload = []
+        elif conv.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        else:
+            history_result = await db.execute(
+                select(Message)
+                .where(Message.conversation_id == conv.id)
+                .order_by(Message.created_at)
+            )
+            history = history_result.scalars().all()
+            messages_payload = [
+                {"role": m.role, "content": m.content}
+                for m in history
+            ]
     else:
         conv = Conversation(
             id=generate_uuid(),

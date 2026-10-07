@@ -3,7 +3,7 @@ from typing import Optional
 from urllib.parse import urlencode
 import secrets
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,30 +15,108 @@ from app.database.session import get_db
 from app.models.models import User
 from app.schemas.schemas import UserCreate, UserLogin, UserResponse, Token
 
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login-form")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login-form", auto_error=False)
 
 # Google OAuth URLs
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> User:
+def _set_auth_cookie(response: Response, token: str):
+    """Set standard authentication cookie for cross-request session persistence."""
+    response.set_cookie(
+        key="thinkflow_token",
+        value=token,
+        httponly=False,
+        samesite="lax",
+        secure=True,
+        path="/",
+        max_age=60 * 60 * 24 * 7,  # 7 days
+    )
+
+async def get_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db)
+) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate authentication credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    payload = decode_access_token(token)
+
+    # 1. Check Authorization header, fallback to Cookie
+    effective_token = token
+    if not effective_token:
+        # Try authorization header directly if not caught by OAuth2PasswordBearer
+        auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            effective_token = auth_header[7:].strip()
+        elif auth_header:
+            effective_token = auth_header.strip()
+
+    if not effective_token:
+        effective_token = request.cookies.get("thinkflow_token")
+
+    if not effective_token:
+        raise credentials_exception
+
+    payload = decode_access_token(effective_token)
     if payload is None:
         raise credentials_exception
     user_id: str = payload.get("sub")
     if user_id is None:
         raise credentials_exception
 
-    query = select(User).where(User.id == user_id)
+    # 2. Query user in database
+    if user_id == DEMO_USER_ID or payload.get("email") == "demo@thinkflow.ai":
+        query = select(User).where((User.id == DEMO_USER_ID) | (User.email == "demo@thinkflow.ai"))
+    else:
+        query = select(User).where(User.id == user_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
+
+    # 3. Serverless recovery: If database is fresh SQLite container in Vercel serverless
+    if user is None:
+        email = payload.get("email")
+        if user_id == DEMO_USER_ID or email == "demo@thinkflow.ai":
+            user = User(
+                id=DEMO_USER_ID,
+                email="demo@thinkflow.ai",
+                hashed_password=get_password_hash("demo12345"),
+                full_name="Alex Mercer (Demo Lead)",
+                role="admin"
+            )
+            db.add(user)
+            try:
+                await db.commit()
+                await db.refresh(user)
+            except Exception:
+                await db.rollback()
+                q2 = select(User).where((User.id == DEMO_USER_ID) | (User.email == "demo@thinkflow.ai"))
+                r2 = await db.execute(q2)
+                user = r2.scalar_one_or_none()
+        elif email:
+            user = User(
+                id=user_id,
+                email=email,
+                hashed_password=get_password_hash("recovered_session_pass"),
+                full_name=payload.get("name", email.split("@")[0]),
+                role=payload.get("role", "user")
+            )
+            db.add(user)
+            try:
+                await db.commit()
+                await db.refresh(user)
+            except Exception:
+                await db.rollback()
+                q2 = select(User).where(User.id == user_id)
+                r2 = await db.execute(q2)
+                user = r2.scalar_one_or_none()
+
     if user is None:
         raise credentials_exception
     if not user.is_active:
@@ -46,7 +124,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     return user
 
 @router.post("/register", response_model=Token)
-async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+async def register(user_in: UserCreate, response: Response, db: AsyncSession = Depends(get_db)):
     query = select(User).where(User.email == user_in.email)
     result = await db.execute(query)
     existing_user = result.scalar_one_or_none()
@@ -65,7 +143,11 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id,
+        extra_claims={"email": user.email, "role": user.role, "name": user.full_name}
+    )
+    _set_auth_cookie(response, access_token)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -73,7 +155,7 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     }
 
 @router.post("/login", response_model=Token)
-async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
+async def login(credentials: UserLogin, response: Response, db: AsyncSession = Depends(get_db)):
     query = select(User).where(User.email == credentials.email)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -84,7 +166,11 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
             detail="Incorrect email or password."
         )
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id,
+        extra_claims={"email": user.email, "role": user.role, "name": user.full_name}
+    )
+    _set_auth_cookie(response, access_token)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -92,7 +178,7 @@ async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     }
 
 @router.post("/login-form", response_model=Token)
-async def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+async def login_form(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     query = select(User).where(User.email == form_data.username)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -103,7 +189,11 @@ async def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Async
             detail="Incorrect username or password."
         )
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id,
+        extra_claims={"email": user.email, "role": user.role, "name": user.full_name}
+    )
+    _set_auth_cookie(response, access_token)
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -111,13 +201,14 @@ async def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Async
     }
 
 @router.post("/demo-login", response_model=Token)
-async def demo_login(db: AsyncSession = Depends(get_db)):
-    query = select(User).where(User.email == "demo@thinkflow.ai")
+async def demo_login(response: Response, db: AsyncSession = Depends(get_db)):
+    query = select(User).where((User.email == "demo@thinkflow.ai") | (User.id == DEMO_USER_ID))
     result = await db.execute(query)
     user = result.scalar_one_or_none()
 
     if not user:
         user = User(
+            id=DEMO_USER_ID,
             email="demo@thinkflow.ai",
             hashed_password=get_password_hash("demo12345"),
             full_name="Alex Mercer (Demo Lead)",
@@ -127,12 +218,21 @@ async def demo_login(db: AsyncSession = Depends(get_db)):
         await db.commit()
         await db.refresh(user)
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id,
+        extra_claims={"email": user.email, "role": user.role, "name": user.full_name}
+    )
+    _set_auth_cookie(response, access_token)
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "user": user
     }
+
+@router.post("/logout")
+async def logout(response: Response):
+    response.delete_cookie(key="thinkflow_token", path="/")
+    return {"status": "logged_out"}
 
 @router.get("/me", response_model=UserResponse)
 async def read_current_user(current_user: User = Depends(get_current_user)):
@@ -302,8 +402,13 @@ async def google_callback(
     await db.refresh(user)
 
     # 4. Generate standard ThinkFlow JWT token using existing security architecture
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(
+        user.id,
+        extra_claims={"email": user.email, "role": user.role, "name": user.full_name}
+    )
 
-    # 5. Redirect to frontend with token
+    # 5. Redirect to frontend with token and set cookie
     redirect_url = f"{frontend_url}/auth/google/callback?token={access_token}"
-    return RedirectResponse(url=redirect_url)
+    response = RedirectResponse(url=redirect_url)
+    _set_auth_cookie(response, access_token)
+    return response
