@@ -4,14 +4,7 @@
     "backend": {
       "root": "backend",
       "framework": "fastapi",
-      "bindings": [
-        {
-          "type": "service",
-          "service": "frontend",
-          "format": "url",
-          "env": "FRONTEND_URL"
-        }
-      ]
+      "entrypoint": "app/main.py"
     },
     "frontend": {
       "root": "frontend",
